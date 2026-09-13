@@ -2,7 +2,7 @@
 mini-agent.py —— 我的第一 Agent：最小 Agent Loop
 规格（对齐 AgentGuide Day 2）：
   - 2 个工具：search_notes（搜笔记）/ write_summary（写摘要）
-  - 最多 5 步（Loop Controller，防无限循环烧钱）
+  - 最多 8 步（Loop Controller，防无限循环烧钱；步数预算按工具数量留余量）
   - 每步写 JSONL trace（可审计、可复盘）
   - 出错不崩溃，把可读的错误喂回给模型或返回给用户
 
@@ -22,15 +22,26 @@ load_dotenv()  # 读取同目录 .env：key、接口地址、模型名、笔记�
 client = OpenAI(
     api_key=os.environ["LLM_API_KEY"],
     base_url=os.environ.get("LLM_BASE_URL"),  # 换厂商 = 改这一行 + MODEL
+    timeout=30.0,   # Day3: 30 秒没响应就放弃，别干等
+    max_retries=2,  # Day3: 网络抖动/限流时 SDK 自动重试 2 次
 )
 MODEL = os.environ["LLM_MODEL"]
 NOTES_DIR = Path(os.environ.get("NOTES_DIR", "./notes"))
 OUTPUT_DIR = Path("output")
 TRACE_FILE = OUTPUT_DIR / "trace.jsonl"
-MAX_STEPS = 5  # Loop Controller 的"下班闹钟"
+MAX_STEPS = 8  # Loop Controller 的"下班闹钟"；步数预算 ≈ 工具调用次数 + 最终回答，留余量
 
 
 # ---------- 2. 工具层（Tool Registry：真正干活的函数） ----------
+def clip(text: str, limit: int = 800) -> str:
+    """Day3: 工具结果统一限长——超长截断并告诉模型下一步怎么办。
+    原因：模型的上下文又贵又有限，塞一大堆内容会烧钱还干扰判断。"""
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...(结果太长已截断，原文共 {len(text)} 字；建议缩小搜索范围或分次读取)"
+
+
 def search_notes(query: str, max_hits: int = 8) -> str:
     """在笔记目录所有 .md 文件里按关键词搜，返回 '文件名:行号: 内容' 列表"""
     hits = []
@@ -57,6 +68,18 @@ def write_summary(text: str) -> str:
     return f"摘要已保存到 {path}"
 
 
+def read_note(filename: str) -> str:
+    """Day3 新工具：按文件名读笔记全文（和 search_notes 配套：先搜后读）"""
+    matches = [md for md in NOTES_DIR.rglob("*.md") if md.name == filename]
+    if not matches:
+        # Day3 原则：错误信息要能指导模型的下一步动作，而不是一句"出错了"
+        return f"没有找到名为「{filename}」的笔记。可以先用 search_notes 搜关键词，再从结果里复制文件名"
+    if len(matches) > 1:
+        paths = "\n".join(str(m.relative_to(NOTES_DIR)) for m in matches)
+        return f"有 {len(matches)} 个同名文件，请用相对路径精确指定：\n{paths}"
+    return matches[0].read_text(encoding="utf-8")
+
+
 # 给模型看的"工具说明书"（Function Calling 标准 JSON Schema）
 TOOL_SPECS = [
     {
@@ -76,6 +99,20 @@ TOOL_SPECS = [
     {
         "type": "function",
         "function": {
+            "name": "read_note",
+            "description": "读取指定笔记文件的完整内容。先用 search_notes 搜索，从结果里拿到文件名，再用本工具阅读全文。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "笔记文件名，例如 用户画像.md"},
+                },
+                "required": ["filename"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_summary",
             "description": "把整理好的总结文本保存成文件，方便用户以后查看。",
             "parameters": {
@@ -88,13 +125,13 @@ TOOL_SPECS = [
         },
     },
 ]
-TOOL_FUNCS = {"search_notes": search_notes, "write_summary": write_summary}
+TOOL_FUNCS = {"search_notes": search_notes, "read_note": read_note, "write_summary": write_summary}
 
 
 # ---------- 3. Context Builder：每次请求，模型能看到什么 ----------
 SYSTEM_PROMPT = f"""你是一个运行在用户电脑上的笔记助手 Agent。
 规则（Policy）：
-1. 回答问题前，先用 search_notes 查用户的真实笔记，不许凭记忆编造笔记内容。
+1. 回答问题前，先用 search_notes 查用户的真实笔记；命中后想看细节，用 read_note 读全文。不许凭记忆编造笔记内容。
 2. 用户要总结/存档时，用 write_summary 保存。
 3. 笔记里查不到就明说"笔记里没有相关内容"，不许猜。
 4. 你最多执行 {MAX_STEPS} 步，动作要节约。"""
@@ -151,7 +188,7 @@ def run_agent(goal: str) -> str:
                 observation = f"错误：没有名为 {name} 的工具"
             else:
                 try:
-                    observation = str(func(**args))
+                    observation = clip(str(func(**args)))  # Day3: 统一限长再喂给模型
                 except Exception as e:
                     observation = f"工具执行出错: {e}"  # 出错不崩溃，喂回给模型自己想办法
 

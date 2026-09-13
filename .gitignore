@@ -4,3 +4,6 @@ output/
 __pycache__/
 *.pyc
 .idea/
+learn_basics.py
+learn_tmp/
+learn_tmp.txt
