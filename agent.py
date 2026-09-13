@@ -17,6 +17,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from rag_lib import semantic_search as rag_semantic_search  # 阶段2：RAG 语义检索
+
 # ---------- 1. 配置 ----------
 load_dotenv()  # 读取同目录 .env：key、接口地址、模型名、笔记目录
 client = OpenAI(
@@ -80,8 +82,30 @@ def read_note(filename: str) -> str:
     return matches[0].read_text(encoding="utf-8")
 
 
+def semantic_search_tool(query: str, top_k: int = 5) -> str:
+    """阶段2 新工具：RAG 语义检索——按"意思"找笔记，不再死磕字面关键词"""
+    try:
+        return rag_semantic_search(query, top_k)
+    except Exception as e:
+        return f"语义检索暂不可用：{e}"   # 没建索引/没配 key 时，给模型一句人话
+
+
 # 给模型看的"工具说明书"（Function Calling 标准 JSON Schema）
 TOOL_SPECS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "semantic_search",
+            "description": "在用户的知识库里做语义搜索：按意思匹配，哪怕字面完全不同也能找到相关内容。回答问题前优先使用这个工具。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "想找的内容，用自然语言描述"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -125,13 +149,18 @@ TOOL_SPECS = [
         },
     },
 ]
-TOOL_FUNCS = {"search_notes": search_notes, "read_note": read_note, "write_summary": write_summary}
+TOOL_FUNCS = {
+    "semantic_search": semantic_search_tool,
+    "search_notes": search_notes,
+    "read_note": read_note,
+    "write_summary": write_summary,
+}
 
 
 # ---------- 3. Context Builder：每次请求，模型能看到什么 ----------
 SYSTEM_PROMPT = f"""你是一个运行在用户电脑上的笔记助手 Agent。
 规则（Policy）：
-1. 回答问题前，先用 search_notes 查用户的真实笔记；命中后想看细节，用 read_note 读全文。不许凭记忆编造笔记内容。
+1. 回答问题前，优先用 semantic_search 语义搜索用户的真实笔记（按意思匹配）；它没结果时再用 search_notes 关键词兜底；命中后想看细节，用 read_note 读全文。不许凭记忆编造笔记内容。
 2. 用户要总结/存档时，用 write_summary 保存。
 3. 笔记里查不到就明说"笔记里没有相关内容"，不许猜。
 4. 你最多执行 {MAX_STEPS} 步，动作要节约。"""
