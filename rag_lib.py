@@ -25,22 +25,27 @@ COLLECTION = "vault"
 
 # ---------- 第 1 步：切块 ----------
 def chunk_text(text: str, size: int = 500, overlap: int = 80) -> list:
-    """把长文本按字符数切成小块，块与块之间重叠 overlap 个字。
+    """把长文本切块。v2 策略：先按 Markdown 标题切（每块=一个主题），
+    单块仍超长再用滑窗细分（块间重叠 overlap 字防截断）。
 
-    为什么要重叠？——答案的关键句可能正好被切在两块的接缝上，
-    重叠 80 字相当于"接缝处两边都留一份复印件"。
-    （进阶课会学按段落/标题切，那是更聪明的切法，v1 先用滑窗）
+    为什么按标题切？—— v1 的固定滑窗会把"六级"那一行和一堆无关内容
+    切进同一块，整块坐标被稀释，检索排名就掉。按主题切，一块只说一件事。
+    （实战教训：这是调试"检索不准"时用真金白银换来的结论）
     """
-    text = text.strip()
-    if not text:
-        return []
-    if len(text) <= size:
-        return [text]
+    import re
+    sections = re.split(r"\n(?=#{1,4} )", text)     # 在标题行前面断开
     chunks = []
-    start = 0
-    while start < len(text):
-        chunks.append(text[start:start + size])
-        start = start + size - overlap   # 前进 size，回退 overlap → 形成重叠
+    for sec in sections:
+        sec = sec.strip()
+        if len(sec) < 20:                           # 太碎的（如纯 frontmatter）跳过
+            continue
+        if len(sec) <= size:
+            chunks.append(sec)
+            continue
+        start = 0
+        while start < len(sec):                     # 段内超长 → 滑窗
+            chunks.append(sec[start:start + size])
+            start += size - overlap
     return chunks
 
 

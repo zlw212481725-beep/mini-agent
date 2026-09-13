@@ -82,7 +82,7 @@ def read_note(filename: str) -> str:
     return matches[0].read_text(encoding="utf-8")
 
 
-def semantic_search_tool(query: str, top_k: int = 5) -> str:
+def semantic_search_tool(query: str, top_k: int = 6) -> str:
     """阶段2 新工具：RAG 语义检索——按"意思"找笔记，不再死磕字面关键词"""
     try:
         return rag_semantic_search(query, top_k)
@@ -96,7 +96,7 @@ TOOL_SPECS = [
         "type": "function",
         "function": {
             "name": "semantic_search",
-            "description": "在用户的知识库里做语义搜索：按意思匹配，哪怕字面完全不同也能找到相关内容。回答问题前优先使用这个工具。",
+            "description": "在用户的知识库里做语义搜索：按意思匹配，字面不同也能找到。调用时 query 必须用一句完整的自然语言描述要找的信息（例如：英语六级什么时候补考），不要堆砌关键词，堆关键词会降低检索质量。",
             "parameters": {
                 "type": "object",
                 "properties": {
